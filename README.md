@@ -4,22 +4,17 @@ Fixes for a LineageOS 17.1 (Android 10) Treble GSI + custom vendor/cust setup on
 
 Not everything here is kernel-side — see the breakdown below.
 
-## 1. Display: black screen stuck after wake from sleep (kernel)
+## 1 & 2. Kernel fixes: display black screen on wake + autofocus
 
-**Root cause:** PowerVR GPU Active Power Management (APM) puts the GPU into a low-power state that fails to properly re-sync with the display controller on wake.
+Kernel-side fixes (GPU APM off for the display bug, AF driver redirect for autofocus) are submitted as a proper PR with full history against the actual kernel source, not dropped here as loose files:
 
-**Fix:** `kernel-patches/config_kernel_user_mt8173.h` — `PVRSRV_APPHINT_ENABLEAPM` forced to `RGX_ACTIVEPM_FORCE_OFF` at compile time. No runtime toggle needed. Measured cost: ~+3.5% idle power draw.
+**→ https://github.com/iiowoii3389/android_kernel_xiaomi_cappu/pull/1**
 
-## 2. Camera: autofocus completely non-functional (kernel)
+Root cause summary:
+- **Display:** GPU Active Power Management (APM) puts the GPU into a low-power state that fails to properly re-sync with the display controller on wake. Fixed by forcing `PVRSRV_APPHINT_ENABLEAPM` to `RGX_ACTIVEPM_FORCE_OFF` at compile time.
+- **Autofocus:** `main_lens.c`'s `g_stAF_DrvList[]` string-matches the actuator name reported by userspace ("WV511AAF") to a driver that doesn't talk to the real hardware correctly. The physical actuator on this unit is actually a **DW9714** (already correctly configured elsewhere in the tree) — redirected the "WV511AAF" name match to the real `DW9714AF_*` driver functions instead.
 
-**Root cause:** `main_lens.c`'s `g_stAF_DrvList[]` string-matches the actuator name reported by the sensor driver ("WV511AAF") to a dead driver entry that doesn't talk to real hardware correctly. The physical actuator on this unit is actually a **DW9714**, whose real I2C address (`0x1C>>1 = 0x0E`) is hardcoded inside `DW9714AF.c` — a completely separate driver that was never being reached by the WV511AAF name match.
-
-Note: `I2C_REGISTER_ID`/`I2C_CONFIG_SETTING` board-file-style constants in `main_lens.c` are dead code on this kernel — they only compile under `CONFIG_MTK_LEGACY`, and this kernel uses `CONFIG_OF` (devicetree). Don't chase I2C address defines there.
-
-**Fix:**
-- `kernel-patches/main_lens.c` — in `g_stAF_DrvList[]`, the `CONFIG_MTK_LENS_WV511AAF_SUPPORT` entry now points at `DW9714AF_SetI2Cclient / DW9714AF_Ioctl / DW9714AF_Release` instead of the dead `WV511AAF_*` functions.
-- `kernel-patches/cappu_defconfig` — added `CONFIG_MTK_LENS_WV511AAF_SUPPORT=y` (required for the above to be compiled in at all).
-- `vendor-cust/ueventd.rc` — added `/dev/MAINAF 0660 system camera` (kernel defaults this node to `0600 root:root`, which blocks userspace camera HAL access).
+Also needed for AF to work: `vendor-cust/ueventd.rc` in this repo — adds `/dev/MAINAF 0660 system camera` (kernel defaults this node to `0600 root:root`, which blocks userspace camera HAL access).
 
 **Verification caveat:** don't trust `getMCUInfo()` or any driver "success" return as proof the motor moved — it's a cached software variable the write path sets unconditionally, not a real I2C read-back on this driver. Confirm with an actual visual focus-pull test.
 
